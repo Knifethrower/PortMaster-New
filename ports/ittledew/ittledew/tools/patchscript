@@ -55,7 +55,6 @@ MACAPP=$(ls -d "$GAMEFILES"/IttleDew.app "$GAMEFILES"/*/IttleDew.app 2>/dev/null
 if [ ! -f "$GAMEFILES/$EXE" ] && [ -f "$MACAPP/Contents/Data/mainData" ]; then
   mv "$MACAPP/Contents/Data" "$DATADIR" && rm -rf "$MACAPP" || fail "Could not move IttleDew.app's data (see patchlog.txt)."
   [ "${MACAPP%/*}" != "$GAMEFILES" ] && rm -rf "${MACAPP%/*}"
-  MAC=1
 fi
 
 xd() { "$controlfolder/xdelta3" -d -f -s "$1" "$GAMEDIR/tools/patch/$2" "$1.new" && mv -f "$1.new" "$1" || { rm -f "$1.new"; fail "Patching ${1##*/} ($V) failed (see patchlog.txt)."; }; }
@@ -74,17 +73,31 @@ korean() {
   echo "Korean added to the game's languages."
 }
 
-if [ -f "$GAMEFILES/$EXE" ]; then
+[ -f "$DATADIR/mainData" ] || fail "No GOG or Steam game files in ports/ittledew/gamedata (see README)."
+# the build, by its mainData's MD5; each build has its own patches in tools/patch/<build>/ (GOG Linux: tools/patch/).
+# Files half-patched by a setup that stopped (a full SD card, for example) match none, so setup never guesses on them
+M=$(md5sum < "$DATADIR/mainData" | cut -c1-32)
+case $M in
+  a1fc9c1cd6ff3d48e7efe9cc3f0f793a) B=gog V="GOG Linux";;
+  ef110f0d7dd65a58cfa3c1722460ea0a) B=gog-windows V="GOG Windows";;
+  49076b7b7bed47f119621bbaa2e329e4) B=gog-mac V="GOG Mac";;
+  4e5165ff98da99b5b8b976b75097ed01) B=steam V="Steam Linux";;
+  2e666c02f2ace34d652afcfd3b17bf77) B=steam-windows V="Steam Windows";;
+  feadd87786f9e0366f280e250b4c9657) B=steam-mac V="Steam Mac";;
+  *) fail "Unknown game files (mainData MD5 $M): not a supported version, or left half-patched by an earlier setup that stopped. Empty ports/ittledew/gamedata and copy the game files in again (see README).";;
+esac
+echo "$V version."
+
+if [ $B = gog ]; then
   # GOG Linux (Unity 4.7.1, 64-bit): runs on its own player, the donor is not needed
   rm -rf "$DATADIR/Plugins/x86_64/ScreenSelector.so" "$DATADIR/Plugins/x86" "$DATADIR/Mono/x86" "$GAMEFILES/IttleDew.x86"
-  V="GOG Linux"
-  echo "$V version. Removed the resolution dialog and 32-bit files."
+  echo "Removed the resolution dialog and 32-bit files."
 
   # player: VRAM floor 64 -> 128 MB (striped portraits); mainData: d-pad on Linux's Xbox axes; level3: lighting effect
   # through a render texture instead of a screen copy; Assembly-CSharp: world at the screen's size; resources: tile
   # UVs 1 texel inside their edges (PowerVR showed seams)
+  xd "$DATADIR/mainData" mainData.xdelta   # first: once it is patched, a stopped setup's files are never taken for a build
   xd "$GAMEFILES/$EXE" player.xdelta
-  xd "$DATADIR/mainData" mainData.xdelta
   xd "$DATADIR/level3" level3.xdelta
   xd "$DATADIR/Managed/Assembly-CSharp.dll" Assembly-CSharp.xdelta
   xd "$DATADIR/resources.assets" resources.xdelta
@@ -98,21 +111,14 @@ if [ -f "$GAMEFILES/$EXE" ]; then
   put_bytes "$DATADIR/level3" 116728 $(le $RW)$(le $RH)
   echo "World render texture: ${RW}x${RH}."
 
-elif [ -f "$DATADIR/mainData" ] && { [ -f "$GAMEFILES/IttleDew.x86" ] || [ -f "$GAMEFILES/IttleDew.exe" ] || [ -n "$MAC" ]; }; then
+else
   # Steam (Unity 4.3.4: Linux 32-bit, Windows, Mac) or GOG Windows/Mac (4.7.1): the data moves onto the donor's Unity
-  # 4.7.2 64-bit player; each build has its own patches in tools/patch/<steam|gog>[-windows|-mac]
-  case "$(head -c 64 "$DATADIR/mainData" | tr -c '[:print:]' ' ')" in *4.7.1f1*) S=GOG; P=gog;; *) S=Steam; P=steam;; esac
-  if [ -n "$MAC" ]; then V="$S Mac"; PD=$P-mac
-  elif [ -f "$GAMEFILES/IttleDew.exe" ]; then V="$S Windows"; PD=$P-windows
-  else V="$S Linux"; PD=$P; fi
-  [ -d "$GAMEDIR/tools/patch/$PD" ] || fail "$V files are not supported (see README)."
-  echo "$V version."
-  # local save files instead of Steam, world at the screen's size, d-pad axes, tile UVs (as for GOG)
-  xd "$DATADIR/Managed/Assembly-CSharp.dll" $PD/Assembly-CSharp.xdelta
-  xd "$DATADIR/mainData" $PD/mainData.xdelta
-  xd "$DATADIR/resources.assets" $PD/resources.xdelta
+  # 4.7.2 64-bit player; local save files instead of Steam, world at the screen's size, d-pad axes, tile UVs (as for GOG)
+  xd "$DATADIR/mainData" $B/mainData.xdelta   # first (see GOG Linux)
+  xd "$DATADIR/Managed/Assembly-CSharp.dll" $B/Assembly-CSharp.xdelta
+  xd "$DATADIR/resources.assets" $B/resources.xdelta
   echo "Game files patched."
-  korean $PD
+  korean $B
   [ -f "$GAMEDIR/donor.7z" ] || fail "donor.7z is missing: reinstall the port."
   "$controlfolder/7zzs.$DEVICE_ARCH" x -aoa "$GAMEDIR/donor.7z" -o"$GAMEDIR/donor" >/dev/null \
     || { rm -rf "$GAMEDIR/donor"; fail "Unpacking donor.7z failed (see patchlog.txt)."; }
@@ -123,9 +129,6 @@ elif [ -f "$DATADIR/mainData" ] && { [ -f "$GAMEFILES/IttleDew.x86" ] || [ -f "$
   rm -rf "$GAMEDIR/donor" "$GAMEFILES"/libsteam_api.so "$GAMEFILES"/libSteamworksNative.so "$DATADIR/output_log.txt" \
     "$GAMEFILES"/goggame-* "$GAMEFILES"/webcache.zip
   echo "Removed the unpacked donor and the store's leftover files."
-
-else
-  fail "No GOG or Steam game files in ports/ittledew/gamedata (see README)."
 fi
 
 # Textures: LowRam (under 1.5 GB) halves the large ones, HighRam keeps full size with mipmaps; then DXT5 -> ASTC 4x4
